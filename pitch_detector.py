@@ -110,8 +110,8 @@ class StreamingPitchDetector:
         best_idx = np.argmax(search_region)
         best_val = search_region[best_idx]
         
-        # Threshold check
-        if best_val > 0.2 * corr[0]:
+        # Threshold check - 0.7 reduces false positives from note transitions
+        if best_val > 0.7 * corr[0]:
             lag = best_idx + search_start
             
             # Parabolic interpolation for sub-sample accuracy
@@ -243,7 +243,7 @@ class StreamingPitchDetector:
             # End previous note
             if self.current_note is not None:
                 note_duration = self.time_position - self.note_start_time
-                if note_duration > 0.03:  # Minimum 30ms note
+                if note_duration > 0.05:  # Minimum 50ms note to filter transition artifacts
                     self.notes.append((
                         self.current_note,
                         self.note_start_time,
