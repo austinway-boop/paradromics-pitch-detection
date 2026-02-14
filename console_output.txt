@@ -1,0 +1,71 @@
+﻿======================================================================
+PARADROMICS STAGE 1: DIGITAL EAR
+TRUE STREAMING PITCH DETECTOR (MONO + POLYPHONIC)
+======================================================================
+Python: 3.11.3
+NumPy: 1.26.3
+Chunk size: 2048 samples
+
+[1] GENERATING TEST AUDIO
+----------------------------------------------------------------------
+  Using existing: test_simple.wav
+  Using existing: test_clean.wav
+  Using existing: test_complex.wav
+  Using existing: test_polyphonic.wav
+
+[2] MONOPHONIC PITCH DETECTION
+----------------------------------------------------------------------
+
+  Input: test_simple.wav
+  Format: 30.0s @ 44100Hz, 16-bit, 1ch
+  Mode: MONOPHONIC
+  Chunk size: 2048 samples (46.4ms)
+  Processing with TRUE STREAMING (no file preload)...
+  -> 341.5x RT | 0.24 MB | 63 notes | 646 chunks
+
+  Input: test_clean.wav
+  Format: 60.0s @ 44100Hz, 16-bit, 1ch
+  Mode: MONOPHONIC
+  Chunk size: 2048 samples (46.4ms)
+  Processing with TRUE STREAMING (no file preload)...
+  -> 341.5x RT | 0.24 MB | 127 notes | 1292 chunks
+
+  Input: test_complex.wav
+  Format: 45.0s @ 44100Hz, 16-bit, 1ch
+  Mode: MONOPHONIC
+  Chunk size: 2048 samples (46.4ms)
+  Processing with TRUE STREAMING (no file preload)...
+  -> 363.5x RT | 0.23 MB | 96 notes | 969 chunks
+
+[3] POLYPHONIC PITCH DETECTION (BONUS)
+----------------------------------------------------------------------
+
+  Input: test_polyphonic.wav
+  Format: 10.0s @ 44100Hz, 16-bit, 1ch
+  Mode: POLYPHONIC
+  Chunk size: 2048 samples (46.4ms)
+  Processing with TRUE STREAMING (no file preload)...
+  -> 102.3x RT | 0.12 MB | 15 notes | 216 chunks
+
+======================================================================
+RESULTS SUMMARY
+======================================================================
+Total audio:    135.0 seconds (monophonic tests)
+Processing:     0.39 seconds
+Speed:          348.6x real-time
+Peak memory:    0.24 MB
+
+CONSTRAINT VERIFICATION:
+----------------------------------------------------------------------
+  [PASS] 4x Real-Time Speed: 348.6x
+  [PASS] < 500 MB RAM: 0.24 MB
+  [PASS] 2048-sample chunks: 2048 samples
+  [PASS] True streaming (no preload): chunk-by-chunk read
+  [PASS] MIDI output: generated
+  [PASS] Polyphonic detection (BONUS): 15 notes detected
+
+[SUCCESS] ALL CONSTRAINTS MET (INCLUDING BONUS)
+
+RASPBERRY PI 4 ESTIMATE (~10x slower):
+  Expected speed: 34.9x real-time
+  Meets 4x requirement: YES
