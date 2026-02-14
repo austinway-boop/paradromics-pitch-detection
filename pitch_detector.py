@@ -407,56 +407,72 @@ def process_wav_streaming(input_path, output_path, chunk_size=CHUNK_SIZE, polyph
     tracemalloc.start()
     t0 = time.perf_counter()
     
-    with wave.open(input_path, 'rb') as wav:
-        sample_rate = wav.getframerate()
-        channels = wav.getnchannels()
-        sample_width = wav.getsampwidth()
-        total_frames = wav.getnframes()
-        
-        duration = total_frames / sample_rate
-        mode = "POLYPHONIC" if polyphonic else "MONOPHONIC"
-        print(f"  Input: {os.path.basename(input_path)}")
-        print(f"  Format: {duration:.1f}s @ {sample_rate}Hz, {sample_width*8}-bit, {channels}ch")
-        print(f"  Mode: {mode}")
-        print(f"  Chunk size: {chunk_size} samples ({chunk_size/sample_rate*1000:.1f}ms)")
-        print(f"  Processing with TRUE STREAMING (no file preload)...")
-        
-        detector = StreamingPitchDetector(
-            sample_rate=sample_rate, 
-            chunk_size=chunk_size,
-            polyphonic=polyphonic
-        )
-        
-        # Normalization factor
-        max_val = 2 ** (sample_width * 8 - 1)
-        
-        # STREAMING LOOP - read chunk by chunk
-        chunks_processed = 0
-        
-        while True:
-            # Read exactly one chunk worth of raw bytes
-            raw_data = wav.readframes(chunk_size)
-            if len(raw_data) == 0:
-                break
+    try:
+        wav = wave.open(input_path, 'rb')
+    except wave.Error as e:
+        tracemalloc.stop()
+        print(f"  Error: Invalid WAV file - {e}")
+        return {'error': str(e), 'notes': 0, 'elapsed': 0, 'duration': 0, 'rtf': 0, 'memory_mb': 0, 'chunks': 0}
+    except Exception as e:
+        tracemalloc.stop()
+        print(f"  Error: Could not open file - {e}")
+        return {'error': str(e), 'notes': 0, 'elapsed': 0, 'duration': 0, 'rtf': 0, 'memory_mb': 0, 'chunks': 0}
+    
+    try:
+        with wav:
+            sample_rate = wav.getframerate()
+            channels = wav.getnchannels()
+            sample_width = wav.getsampwidth()
+            total_frames = wav.getnframes()
             
-            # Convert bytes to samples
-            if sample_width == 2:
-                samples = np.frombuffer(raw_data, dtype=np.int16).astype(np.float32)
-            elif sample_width == 1:
-                samples = (np.frombuffer(raw_data, dtype=np.uint8).astype(np.float32) - 128) * 256
-            else:
-                raise ValueError(f"Unsupported sample width: {sample_width}")
+            duration = total_frames / sample_rate
+            mode = "POLYPHONIC" if polyphonic else "MONOPHONIC"
+            print(f"  Input: {os.path.basename(input_path)}")
+            print(f"  Format: {duration:.1f}s @ {sample_rate}Hz, {sample_width*8}-bit, {channels}ch")
+            print(f"  Mode: {mode}")
+            print(f"  Chunk size: {chunk_size} samples ({chunk_size/sample_rate*1000:.1f}ms)")
+            print(f"  Processing with TRUE STREAMING (no file preload)...")
             
-            # Convert stereo to mono if needed
-            if channels == 2:
-                samples = (samples[0::2] + samples[1::2]) / 2.0
+            detector = StreamingPitchDetector(
+                sample_rate=sample_rate, 
+                chunk_size=chunk_size,
+                polyphonic=polyphonic
+            )
             
-            # Normalize to [-1, 1]
-            samples = samples / max_val
+            # Normalization factor
+            max_val = 2 ** (sample_width * 8 - 1)
+        
+            # STREAMING LOOP - read chunk by chunk
+            chunks_processed = 0
             
-            # Process this chunk
-            detector.process_chunk(samples)
-            chunks_processed += 1
+            while True:
+                # Read exactly one chunk worth of raw bytes
+                raw_data = wav.readframes(chunk_size)
+                if len(raw_data) == 0:
+                    break
+                
+                # Convert bytes to samples
+                if sample_width == 2:
+                    samples = np.frombuffer(raw_data, dtype=np.int16).astype(np.float32)
+                elif sample_width == 1:
+                    samples = (np.frombuffer(raw_data, dtype=np.uint8).astype(np.float32) - 128) * 256
+                else:
+                    raise ValueError(f"Unsupported sample width: {sample_width}")
+                
+                # Convert stereo to mono if needed
+                if channels == 2:
+                    samples = (samples[0::2] + samples[1::2]) / 2.0
+                
+                # Normalize to [-1, 1]
+                samples = samples / max_val
+                
+                # Process this chunk
+                detector.process_chunk(samples)
+                chunks_processed += 1
+    except Exception as e:
+        tracemalloc.stop()
+        print(f"  Error processing file: {e}")
+        return {'error': str(e), 'notes': 0, 'elapsed': 0, 'duration': 0, 'rtf': 0, 'memory_mb': 0, 'chunks': 0}
     
     notes = detector.finalize()
     
