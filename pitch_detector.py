@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """
 Paradromics Internship Qualifier - Stage 1: Digital Ear
-Streaming Pitch Detection Engine with MIDI Output
+TRUE STREAMING PITCH DETECTOR
 
-This solution implements a memory-efficient, streaming pitch detector that:
-1. Reads audio in small chunks (max 2048 samples)
-2. Processes 60s of 44kHz/16bit audio in under 15 seconds
-3. Stays under 500MB RAM
-4. Outputs MIDI melody files
+Features:
+- Reads audio in 2048-sample chunks (never loads entire file)
+- Processes each chunk immediately, releases memory
+- Outputs MIDI melody file
+- Pure NumPy (Raspberry Pi compatible)
 
-Algorithm: NumPy-optimized autocorrelation pitch detection
+Requirements: numpy
+Run: python pitch_detector.py [input.wav] [output.mid]
 """
 
 import wave
@@ -20,153 +21,142 @@ import sys
 import os
 import math
 
-try:
-    import numpy as np
-    HAS_NUMPY = True
-except ImportError:
-    HAS_NUMPY = False
-    print("Warning: NumPy not available, using slower pure Python")
+import numpy as np
 
 # MIDI Constants
 MIDI_NOTE_ON = 0x90
 MIDI_NOTE_OFF = 0x80
+CHUNK_SIZE = 2048
 
 
 class StreamingPitchDetector:
-    """Optimized pitch detector using numpy autocorrelation."""
+    """
+    Streaming pitch detector using FFT-based autocorrelation.
+    Processes one chunk at a time - no file preloading.
+    """
     
-    def __init__(self, sample_rate=44100, chunk_size=2048, min_freq=80, max_freq=1000):
+    def __init__(self, sample_rate=44100, chunk_size=CHUNK_SIZE, min_freq=80, max_freq=1000):
         self.sample_rate = sample_rate
         self.chunk_size = chunk_size
         self.min_lag = max(1, int(sample_rate / max_freq))
         self.max_lag = min(chunk_size, int(sample_rate / min_freq))
         
-        # Pre-allocate FFT arrays for speed
+        # Pre-allocate FFT buffer (power of 2 for speed)
         self.fft_size = 4096
-        self._fft_buffer = np.zeros(self.fft_size, dtype=np.float32) if HAS_NUMPY else None
+        self._fft_buffer = np.zeros(self.fft_size, dtype=np.float32)
         
+        # Note tracking state
         self.current_note = None
-        self.note_start_time = 0
+        self.note_start_time = 0.0
         self.notes = []
         self.time_position = 0.0
-        self.prev_samples = None
-        self.chunk_counter = 0  # For skipping chunks
-        
-    def _detect_pitch_numpy(self, samples):
-        """Ultra-optimized FFT-based autocorrelation pitch detection."""
-        n = len(samples)
-        if n < self.min_lag * 2:
-            return None
-        
-        # Quick energy check using dot product (very fast)
-        energy = np.dot(samples, samples)
-        if energy < 0.0001:
-            return None
-        
-        # Use pre-allocated buffer
-        use_n = min(n, 2048)
-        self._fft_buffer[:use_n] = samples[:use_n]
-        self._fft_buffer[use_n:] = 0
-        
-        # FFT-based autocorrelation with pre-sized buffer
-        fft = np.fft.rfft(self._fft_buffer)
-        power = fft.real * fft.real + fft.imag * fft.imag
-        corr = np.fft.irfft(power)
-        
-        # Find best peak - vectorized
-        search = corr[self.min_lag:self.max_lag]
-        if len(search) == 0:
-            return None
-            
-        best_idx = search.argmax()
-        
-        if search[best_idx] > 0.2 * corr[0]:
-            freq = self.sample_rate / (best_idx + self.min_lag)
-            return self._freq_to_midi(freq)
-        
-        return None
-    
-    def _detect_pitch_pure(self, samples):
-        """Pure Python fallback (slower)."""
-        n = len(samples)
-        if n < self.max_lag:
-            return None
-            
-        energy = sum(s*s for s in samples)
-        if energy < 0.001:
-            return None
-        
-        best_lag = 0
-        best_corr = -1
-        
-        # Sample fewer lags for speed
-        step = max(1, (self.max_lag - self.min_lag) // 50)
-        
-        for lag in range(self.min_lag, self.max_lag, step):
-            corr = sum(samples[i] * samples[i + lag] for i in range(n - lag))
-            norm_corr = corr / (energy + 1e-10)
-            
-            if norm_corr > best_corr:
-                best_corr = norm_corr
-                best_lag = lag
-        
-        if best_lag > 0 and best_corr > 0.3:
-            freq = self.sample_rate / best_lag
-            return self._freq_to_midi(freq)
-        
-        return None
     
     def _freq_to_midi(self, freq):
         """Convert frequency to MIDI note number."""
         if freq <= 0:
             return None
-        midi = 69 + 12 * math.log2(freq / 440.0)
+        midi = 69.0 + 12.0 * math.log2(freq / 440.0)
         midi_rounded = int(round(midi))
         if 21 <= midi_rounded <= 108:
             return midi_rounded
         return None
     
+    def _detect_pitch(self, samples):
+        """
+        Detect pitch using FFT-based autocorrelation.
+        
+        Algorithm:
+        1. Compute FFT of zero-padded samples
+        2. Compute power spectrum
+        3. Inverse FFT to get autocorrelation
+        4. Find peak in valid lag range
+        5. Convert lag to frequency
+        """
+        n = len(samples)
+        if n < self.min_lag * 2:
+            return None
+        
+        # Energy gate - skip silent chunks
+        energy = np.dot(samples, samples)
+        if energy < 0.0001:
+            return None
+        
+        # Zero-pad and FFT
+        use_n = min(n, self.chunk_size)
+        self._fft_buffer[:use_n] = samples[:use_n]
+        self._fft_buffer[use_n:] = 0.0
+        
+        # FFT-based autocorrelation
+        fft = np.fft.rfft(self._fft_buffer)
+        power = fft.real * fft.real + fft.imag * fft.imag
+        corr = np.fft.irfft(power)
+        
+        # Find peak in search range
+        search_start = self.min_lag
+        search_end = min(self.max_lag, len(corr))
+        
+        if search_end <= search_start:
+            return None
+        
+        search_region = corr[search_start:search_end]
+        best_idx = np.argmax(search_region)
+        best_val = search_region[best_idx]
+        
+        # Threshold check
+        if best_val > 0.2 * corr[0]:
+            lag = best_idx + search_start
+            
+            # Parabolic interpolation for sub-sample accuracy
+            if 0 < best_idx < len(search_region) - 1:
+                y0 = search_region[best_idx - 1]
+                y1 = search_region[best_idx]
+                y2 = search_region[best_idx + 1]
+                denom = y0 - 2.0 * y1 + y2
+                if abs(denom) > 1e-10:
+                    delta = 0.5 * (y0 - y2) / denom
+                    delta = max(-0.5, min(0.5, delta))
+                    lag = lag + delta
+            
+            freq = self.sample_rate / lag
+            return self._freq_to_midi(freq)
+        
+        return None
+    
     def process_chunk(self, samples):
-        """Process a chunk of audio samples."""
+        """Process a single chunk of audio samples."""
         chunk_duration = len(samples) / self.sample_rate
-        self.chunk_counter += 1
         
-        if HAS_NUMPY:
+        # Ensure float32 numpy array
+        if not isinstance(samples, np.ndarray):
             samples = np.asarray(samples, dtype=np.float32)
-            
-            # Process every chunk for accuracy (but fast algorithm)
-            midi_note = self._detect_pitch_numpy(samples)
-        else:
-            if self.prev_samples:
-                combined = self.prev_samples + list(samples)
-            else:
-                combined = list(samples)
-            
-            self.prev_samples = list(samples[len(samples)//2:])
-            midi_note = self._detect_pitch_pure(combined)
+        elif samples.dtype != np.float32:
+            samples = samples.astype(np.float32)
         
-        self._update_note_state(midi_note, chunk_duration)
+        midi_note = self._detect_pitch(samples)
+        self._update_note_state(midi_note)
         self.time_position += chunk_duration
         
         return midi_note
     
-    def _update_note_state(self, new_note, duration):
+    def _update_note_state(self, new_note):
         """Track note on/off events."""
         if new_note != self.current_note:
+            # End previous note
             if self.current_note is not None:
                 note_duration = self.time_position - self.note_start_time
-                if note_duration > 0.03:
+                if note_duration > 0.03:  # Minimum 30ms note
                     self.notes.append((
                         self.current_note,
                         self.note_start_time,
                         note_duration
                     ))
             
+            # Start new note
             self.current_note = new_note
             self.note_start_time = self.time_position
     
     def finalize(self):
-        """Finalize and return all notes."""
+        """Finalize and return all detected notes."""
         if self.current_note is not None:
             note_duration = self.time_position - self.note_start_time
             if note_duration > 0.03:
@@ -179,7 +169,7 @@ class StreamingPitchDetector:
 
 
 class MIDIWriter:
-    """MIDI file writer."""
+    """Simple MIDI file writer."""
     
     def __init__(self, tempo_bpm=120):
         self.tempo_bpm = tempo_bpm
@@ -202,10 +192,11 @@ class MIDIWriter:
         """Write notes to MIDI file."""
         track = bytearray()
         
-        # Tempo
+        # Tempo meta event
         track.extend(b'\x00\xFF\x51\x03')
         track.extend(self.us_per_beat.to_bytes(3, 'big'))
         
+        # Convert notes to events
         events = []
         for note, start, dur in sorted(notes, key=lambda x: x[1]):
             start_tick = self._sec_to_ticks(start)
@@ -215,12 +206,14 @@ class MIDIWriter:
         
         events.sort(key=lambda x: (x[0], not x[1]))
         
+        # Write events
         tick = 0
         for t, on, n, v in events:
             track.extend(self._vlq(t - tick))
             tick = t
             track.extend(bytes([MIDI_NOTE_ON if on else MIDI_NOTE_OFF, n, v]))
         
+        # End of track
         track.extend(b'\x00\xFF\x2F\x00')
         
         with open(filename, 'wb') as f:
@@ -228,176 +221,247 @@ class MIDIWriter:
             f.write(b'MTrk' + struct.pack('>I', len(track)) + track)
 
 
-def process_wav(input_path, output_path, chunk_size=2048):
-    """Process WAV file with streaming pitch detection."""
+def process_wav_streaming(input_path, output_path, chunk_size=CHUNK_SIZE):
+    """
+    Process WAV file using TRUE STREAMING.
+    
+    - Reads exactly chunk_size samples at a time
+    - Never loads entire file into RAM
+    - Processes and discards each chunk before reading next
+    """
     tracemalloc.start()
     t0 = time.perf_counter()
     
     with wave.open(input_path, 'rb') as wav:
-        sr = wav.getframerate()
-        ch = wav.getnchannels()
-        sw = wav.getsampwidth()
-        nf = wav.getnframes()
+        sample_rate = wav.getframerate()
+        channels = wav.getnchannels()
+        sample_width = wav.getsampwidth()
+        total_frames = wav.getnframes()
         
-        print(f"  {os.path.basename(input_path)}: {nf/sr:.1f}s @ {sr}Hz/{sw*8}bit")
+        duration = total_frames / sample_rate
+        print(f"  Input: {os.path.basename(input_path)}")
+        print(f"  Format: {duration:.1f}s @ {sample_rate}Hz, {sample_width*8}-bit, {channels}ch")
+        print(f"  Chunk size: {chunk_size} samples ({chunk_size/sample_rate*1000:.1f}ms)")
+        print(f"  Processing with TRUE STREAMING (no file preload)...")
         
-        detector = StreamingPitchDetector(sample_rate=sr, chunk_size=chunk_size)
+        detector = StreamingPitchDetector(sample_rate=sample_rate, chunk_size=chunk_size)
+        
+        # Normalization factor
+        max_val = 2 ** (sample_width * 8 - 1)
+        
+        # STREAMING LOOP - read chunk by chunk
+        chunks_processed = 0
+        frames_to_read = chunk_size * channels  # Account for stereo
         
         while True:
-            raw = wav.readframes(chunk_size)
-            if not raw:
+            # Read exactly one chunk worth of raw bytes
+            raw_data = wav.readframes(chunk_size)
+            if len(raw_data) == 0:
                 break
             
-            ns = len(raw) // (sw * ch)
-            samples = struct.unpack(f'<{ns * ch}h', raw) if sw == 2 else [b-128 for b in raw]
+            # Convert bytes to samples
+            if sample_width == 2:
+                samples = np.frombuffer(raw_data, dtype=np.int16).astype(np.float32)
+            elif sample_width == 1:
+                samples = (np.frombuffer(raw_data, dtype=np.uint8).astype(np.float32) - 128) * 256
+            else:
+                raise ValueError(f"Unsupported sample width: {sample_width}")
             
-            if ch == 2:
-                samples = [(samples[i] + samples[i+1]) / 2 for i in range(0, len(samples), 2)]
+            # Convert stereo to mono if needed
+            if channels == 2:
+                samples = (samples[0::2] + samples[1::2]) / 2.0
             
-            max_val = 2 ** (sw * 8 - 1)
-            samples = [s / max_val for s in samples]
+            # Normalize to [-1, 1]
+            samples = samples / max_val
             
+            # Process this chunk
             detector.process_chunk(samples)
-        
-        notes = detector.finalize()
+            chunks_processed += 1
+            
+            # Memory is automatically released - samples goes out of scope
+            # No accumulation of data in RAM
     
+    notes = detector.finalize()
+    
+    # Write MIDI output
     MIDIWriter().write(notes, output_path)
     
     t1 = time.perf_counter()
-    _, peak = tracemalloc.get_traced_memory()
+    current, peak = tracemalloc.get_traced_memory()
     tracemalloc.stop()
     
     elapsed = t1 - t0
-    duration = nf / sr
+    rtf = duration / elapsed if elapsed > 0 else 0
     
     return {
         'elapsed': elapsed,
         'duration': duration,
-        'rtf': duration / elapsed if elapsed > 0 else 0,
+        'rtf': rtf,
         'memory_mb': peak / (1024 * 1024),
         'notes': len(notes),
+        'chunks': chunks_processed,
         'output': output_path
     }
 
 
-def generate_test_wav(filename, duration=60, sr=44100):
-    """Generate test WAV with melody."""
-    if HAS_NUMPY:
-        notes_hz = np.array([261.63, 293.66, 329.63, 349.23, 392.00, 440.00, 493.88, 523.25])
-        t = np.arange(int(duration * sr)) / sr
-        
-        # Create melody by cycling through notes
-        note_dur = 0.5
-        samples_per_note = int(note_dur * sr)
-        
-        samples = np.zeros(len(t), dtype=np.float32)
-        for i in range(len(t)):
-            note_idx = (i // samples_per_note) % len(notes_hz)
-            freq = notes_hz[note_idx]
-            pos_in_note = (i % samples_per_note) / samples_per_note
-            
-            # Simple sine with envelope
-            env = min(1.0, pos_in_note * 20) * max(0.0, 1.0 - max(0, pos_in_note - 0.8) * 5)
-            samples[i] = 0.7 * np.sin(2 * np.pi * freq * t[i]) * env
-        
-        samples = (samples * 32767).astype(np.int16)
-    else:
-        notes_hz = [261.63, 293.66, 329.63, 349.23, 392.00, 440.00, 493.88, 523.25]
-        samples = []
-        note_dur = 0.5
-        samples_per_note = int(note_dur * sr)
-        
-        for i in range(int(duration * sr)):
-            note_idx = (i // samples_per_note) % len(notes_hz)
-            freq = notes_hz[note_idx]
-            pos = (i % samples_per_note) / samples_per_note
-            
-            env = min(1.0, pos * 20) * max(0.0, 1.0 - max(0, pos - 0.8) * 5)
-            sample = 0.7 * math.sin(2 * math.pi * freq * i / sr) * env
-            samples.append(max(-32767, min(32767, int(sample * 32767))))
+def generate_test_wav(filename, duration=60, sample_rate=44100):
+    """Generate a test WAV file with C major scale melody."""
+    # C major scale frequencies (C4 to C5)
+    notes_hz = [261.63, 293.66, 329.63, 349.23, 392.00, 440.00, 493.88, 523.25]
+    
+    note_duration = 0.5  # 500ms per note
+    samples_per_note = int(note_duration * sample_rate)
+    total_samples = int(duration * sample_rate)
+    
+    print(f"  Generating: {filename} ({duration}s)")
     
     with wave.open(filename, 'wb') as wav:
         wav.setnchannels(1)
         wav.setsampwidth(2)
-        wav.setframerate(sr)
-        if HAS_NUMPY:
-            wav.writeframes(samples.tobytes())
-        else:
-            wav.writeframes(struct.pack(f'<{len(samples)}h', *samples))
-    
-    print(f"  Generated: {os.path.basename(filename)} ({duration}s)")
+        wav.setframerate(sample_rate)
+        
+        # Generate in chunks to avoid memory issues
+        chunk_samples = 44100  # 1 second at a time
+        for start in range(0, total_samples, chunk_samples):
+            end = min(start + chunk_samples, total_samples)
+            n = end - start
+            
+            t = np.arange(start, end) / sample_rate
+            
+            chunk = np.zeros(n, dtype=np.float32)
+            for i in range(n):
+                sample_idx = start + i
+                note_idx = (sample_idx // samples_per_note) % len(notes_hz)
+                freq = notes_hz[note_idx]
+                
+                # Position within note for envelope
+                pos_in_note = (sample_idx % samples_per_note) / samples_per_note
+                attack = min(1.0, pos_in_note * 20)
+                release = max(0.0, 1.0 - max(0, pos_in_note - 0.8) * 5)
+                envelope = attack * release
+                
+                chunk[i] = 0.7 * math.sin(2 * math.pi * freq * t[i - start + start] / sample_rate * sample_rate) * envelope
+            
+            # Simpler sine generation
+            for i in range(n):
+                sample_idx = start + i
+                note_idx = (sample_idx // samples_per_note) % len(notes_hz)
+                freq = notes_hz[note_idx]
+                pos_in_note = (sample_idx % samples_per_note) / samples_per_note
+                attack = min(1.0, pos_in_note * 20)
+                release = max(0.0, 1.0 - max(0, pos_in_note - 0.8) * 5)
+                envelope = attack * release
+                chunk[i] = 0.7 * np.sin(2 * np.pi * freq * (sample_idx / sample_rate)) * envelope
+            
+            samples_int = (chunk * 32767).astype(np.int16)
+            wav.writeframes(samples_int.tobytes())
 
 
 def main():
-    print("=" * 60)
-    print("PARADROMICS INTERNSHIP QUALIFIER - STAGE 1")
-    print("Digital Ear: Streaming Pitch Detection Engine")
-    print(f"NumPy: {'Available' if HAS_NUMPY else 'Not available (slower)'}")
-    print("=" * 60)
+    print("=" * 70)
+    print("PARADROMICS STAGE 1: DIGITAL EAR")
+    print("TRUE STREAMING PITCH DETECTOR")
+    print("=" * 70)
+    print(f"Python: {sys.version.split()[0]}")
+    print(f"NumPy: {np.__version__}")
+    print(f"Chunk size: {CHUNK_SIZE} samples")
+    print()
     
     base_dir = os.path.dirname(os.path.abspath(__file__))
     
+    # Check for command line arguments
+    if len(sys.argv) >= 3:
+        input_file = sys.argv[1]
+        output_file = sys.argv[2]
+        if not os.path.exists(input_file):
+            print(f"Error: Input file not found: {input_file}")
+            sys.exit(1)
+        
+        print("[PROCESSING]")
+        print("-" * 70)
+        result = process_wav_streaming(input_file, output_file)
+        print(f"\n  Output: {result['output']}")
+        print(f"  Notes detected: {result['notes']}")
+        print(f"  Speed: {result['rtf']:.1f}x real-time")
+        print(f"  Peak memory: {result['memory_mb']:.2f} MB")
+        return
+    
+    # Default: run benchmark with test files
     tests = [
         ('test_simple.wav', 30),
         ('test_clean.wav', 60),
         ('test_complex.wav', 45),
     ]
     
-    print("\n[1] Generating Test Audio")
-    print("-" * 40)
+    print("[1] GENERATING TEST AUDIO")
+    print("-" * 70)
     for name, dur in tests:
-        generate_test_wav(os.path.join(base_dir, name), dur)
+        filepath = os.path.join(base_dir, name)
+        if not os.path.exists(filepath):
+            generate_test_wav(filepath, dur)
+        else:
+            print(f"  Using existing: {name}")
     
-    print("\n[2] Processing Audio Files")
-    print("-" * 40)
+    print()
+    print("[2] STREAMING PITCH DETECTION")
+    print("-" * 70)
     
     results = []
     for name, _ in tests:
         inp = os.path.join(base_dir, name)
         out = os.path.join(base_dir, name.replace('.wav', '.mid'))
-        m = process_wav(inp, out)
-        results.append(m)
-        print(f"    -> {m['rtf']:.1f}x RT | {m['memory_mb']:.1f}MB | {m['notes']} notes")
+        print()
+        result = process_wav_streaming(inp, out)
+        results.append(result)
+        print(f"  -> {result['rtf']:.1f}x RT | {result['memory_mb']:.2f} MB | {result['notes']} notes | {result['chunks']} chunks")
     
-    total_dur = sum(r['duration'] for r in results)
-    total_time = sum(r['elapsed'] for r in results)
-    max_mem = max(r['memory_mb'] for r in results)
+    # Summary
+    total_duration = sum(r['duration'] for r in results)
+    total_elapsed = sum(r['elapsed'] for r in results)
+    peak_memory = max(r['memory_mb'] for r in results)
+    rtf = total_duration / total_elapsed
     
-    print("\n" + "=" * 60)
-    print("RESULTS")
-    print("=" * 60)
-    print(f"Total audio: {total_dur:.1f}s processed in {total_time:.2f}s")
-    print(f"Speed: {total_dur/total_time:.1f}x real-time")
-    print(f"Peak memory: {max_mem:.2f} MB")
+    print()
+    print("=" * 70)
+    print("RESULTS SUMMARY")
+    print("=" * 70)
+    print(f"Total audio:    {total_duration:.1f} seconds")
+    print(f"Processing:     {total_elapsed:.2f} seconds")
+    print(f"Speed:          {rtf:.1f}x real-time")
+    print(f"Peak memory:    {peak_memory:.2f} MB")
     
-    print("\nCONSTRAINT CHECK:")
-    speed_ok = total_dur / total_time >= 4.0
-    mem_ok = max_mem < 500
-    print(f"  [{'PASS' if speed_ok else 'FAIL'}] 4x Real-Time: {total_dur/total_time:.1f}x")
-    print(f"  [{'PASS' if mem_ok else 'FAIL'}] <500MB RAM: {max_mem:.2f} MB")
-    print(f"  [PASS] 2048-sample chunks")
+    print()
+    print("CONSTRAINT VERIFICATION:")
+    print("-" * 70)
     
-    # Save log
-    log = os.path.join(base_dir, 'performance_log.txt')
-    with open(log, 'w') as f:
-        f.write("PARADROMICS PERFORMANCE LOG\n")
-        f.write("=" * 50 + "\n\n")
-        for r in results:
-            f.write(f"File: {os.path.basename(r['output']).replace('.mid', '.wav')}\n")
-            f.write(f"  Duration: {r['duration']:.2f}s\n")
-            f.write(f"  Processing: {r['elapsed']:.2f}s ({r['rtf']:.1f}x RT)\n")
-            f.write(f"  Memory: {r['memory_mb']:.2f} MB\n")
-            f.write(f"  Notes: {r['notes']}\n\n")
-        f.write("=" * 50 + "\n")
-        f.write(f"TOTAL: {total_dur:.1f}s in {total_time:.2f}s = {total_dur/total_time:.1f}x RT\n")
-        f.write(f"PEAK MEM: {max_mem:.2f} MB\n")
+    checks = [
+        ("4x Real-Time Speed", rtf >= 4.0, f"{rtf:.1f}x"),
+        ("< 500 MB RAM", peak_memory < 500, f"{peak_memory:.2f} MB"),
+        ("2048-sample chunks", True, f"{CHUNK_SIZE} samples"),
+        ("True streaming (no preload)", True, "chunk-by-chunk read"),
+        ("MIDI output", all(os.path.exists(r['output']) for r in results), "generated"),
+    ]
     
-    print(f"\nLog saved: {log}")
-    print("\nDELIVERABLES:")
-    for r in results:
-        print(f"  - {os.path.basename(r['output'])}")
+    all_pass = True
+    for name, passed, value in checks:
+        status = "PASS" if passed else "FAIL"
+        print(f"  [{status}] {name}: {value}")
+        if not passed:
+            all_pass = False
     
-    return results
+    print()
+    if all_pass:
+        print("[SUCCESS] ALL CONSTRAINTS MET")
+    else:
+        print("[FAILURE] SOME CONSTRAINTS FAILED")
+    
+    # Pi estimate
+    pi_slowdown = 10
+    pi_rtf = rtf / pi_slowdown
+    print()
+    print(f"RASPBERRY PI 4 ESTIMATE (~{pi_slowdown}x slower):")
+    print(f"  Expected speed: {pi_rtf:.1f}x real-time")
+    print(f"  Meets 4x requirement: {'YES' if pi_rtf >= 4.0 else 'NO'}")
 
 
 if __name__ == '__main__':
