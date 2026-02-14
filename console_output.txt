@@ -21,21 +21,21 @@ Chunk size: 2048 samples
   Mode: MONOPHONIC
   Chunk size: 2048 samples (46.4ms)
   Processing with TRUE STREAMING (no file preload)...
-  -> 360.9x RT | 0.24 MB | 63 notes | 646 chunks
+  -> 349.8x RT | 0.24 MB | 63 notes | 646 chunks
 
   Input: test_clean.wav
   Format: 60.0s @ 44100Hz, 16-bit, 1ch
   Mode: MONOPHONIC
   Chunk size: 2048 samples (46.4ms)
   Processing with TRUE STREAMING (no file preload)...
-  -> 351.4x RT | 0.24 MB | 127 notes | 1292 chunks
+  -> 334.4x RT | 0.24 MB | 127 notes | 1292 chunks
 
   Input: test_complex.wav
   Format: 45.0s @ 44100Hz, 16-bit, 1ch
   Mode: MONOPHONIC
   Chunk size: 2048 samples (46.4ms)
   Processing with TRUE STREAMING (no file preload)...
-  -> 369.0x RT | 0.23 MB | 96 notes | 969 chunks
+  -> 352.6x RT | 0.23 MB | 96 notes | 969 chunks
 
 [3] POLYPHONIC PITCH DETECTION (BONUS)
 ----------------------------------------------------------------------
@@ -45,19 +45,19 @@ Chunk size: 2048 samples
   Mode: POLYPHONIC
   Chunk size: 2048 samples (46.4ms)
   Processing with TRUE STREAMING (no file preload)...
-  -> 103.2x RT | 0.12 MB | 15 notes | 216 chunks
+  -> 103.1x RT | 0.12 MB | 15 notes | 216 chunks
 
 ======================================================================
 RESULTS SUMMARY
 ======================================================================
 Total audio:    135.0 seconds (monophonic tests)
-Processing:     0.38 seconds
-Speed:          359.2x real-time
+Processing:     0.39 seconds
+Speed:          343.7x real-time
 Peak memory:    0.24 MB
 
 CONSTRAINT VERIFICATION:
 ----------------------------------------------------------------------
-  [PASS] 4x Real-Time Speed: 359.2x
+  [PASS] 4x Real-Time Speed: 343.7x
   [PASS] < 500 MB RAM: 0.24 MB
   [PASS] 2048-sample chunks: 2048 samples
   [PASS] True streaming (no preload): chunk-by-chunk read
@@ -67,5 +67,5 @@ CONSTRAINT VERIFICATION:
 [SUCCESS] ALL CONSTRAINTS MET (INCLUDING BONUS)
 
 RASPBERRY PI 4 ESTIMATE (~10x slower):
-  Expected speed: 35.9x real-time
+  Expected speed: 34.4x real-time
   Meets 4x requirement: YES
